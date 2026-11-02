@@ -112,6 +112,18 @@ class StreamDeliveryMixin:
             deliver(ctx_scrubber.flush())
         self._current_streamed_assistant_text = ""
 
+    def _seal_abandoned_stream_attempt(self, marker: str) -> None:
+        """A fallback switch abandons the request in flight. Text it already streamed stays on screen,
+        so close it under ``marker`` and open a fresh display segment: otherwise the fallback's answer
+        is appended to the abandoned partial (and a provider's rejection string) as one reply."""
+        if not getattr(self, "_streamed_assistant_text_parts", None) or self._stream_writer_superseded():
+            return
+        if marker and self._warning_presentation_enabled():
+            self._fire_stream_delta(marker)
+        self._reset_stream_delivery_tracking()
+        # Display callback only — TTS (_stream_callback) must NOT receive None (EOS).
+        self._call_quietly(self.stream_delta_callback, None)
+
     @property
     def _current_streamed_assistant_text(self) -> str:
         """Visible assistant text streamed so far this turn. Backed by a list of pieces: ``+=`` on a string
