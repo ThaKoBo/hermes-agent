@@ -382,6 +382,12 @@ class MCPServerRunMixin:
                 raise
             except Exception as exc:
                 self.session = None
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    # The HTTP stack's anyio cancel scopes can report an outside cancel (start()'s
+                    # connect timeout) as a plain exception. Parking on it leaves a task nobody owns:
+                    # it self-probes forever and, once revived, publishes no tools.
+                    raise asyncio.CancelledError() from exc
                 if not await self._on_transport_error(exc, budget):
                     break
             finally:

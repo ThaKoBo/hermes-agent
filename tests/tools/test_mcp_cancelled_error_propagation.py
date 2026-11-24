@@ -27,7 +27,46 @@ async def _hanging_run(self, cfg):
     await asyncio.sleep(3600)
 
 
+async def _cancel_surfaces_as_exception(self, cfg):
+    """Transport that turns an outside cancel into a plain exception, the way the HTTP stack's
+    anyio cancel scopes do ("Cancelled via cancel scope ...; WouldBlock")."""
+    try:
+        await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        raise RuntimeError("Cancelled via cancel scope 1b6df3ad3b0; WouldBlock") from None
+
+
 class TestCancelledErrorPropagation:
+    def test_cancel_surfacing_as_plain_exception_still_ends_the_run_task(self):
+        """``start()`` cancels the run task on a connect timeout and drops the server. If the
+        transport reports that cancel as an ordinary exception, the run loop must still end:
+        treating it as a connection failure parks an unowned task that self-probes forever and,
+        once revived, publishes no tools while the owned slot stays empty."""
+        from tools.mcp_tool import MCPServerTask
+
+        server = MCPServerTask("cancel-as-exception")
+
+        async def drive():
+            with patch.object(MCPServerTask, "_run_stdio", _cancel_surfaces_as_exception), \
+                 patch.object(MCPServerTask, "_is_http", lambda self: False):
+                task = asyncio.create_task(server.run({"command": "fake"}))
+                await asyncio.sleep(0.05)
+                task.cancel()
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+                except asyncio.CancelledError:
+                    return "ended"
+                except TimeoutError:
+                    server._shutdown_event.set()
+                    server._reconnect_event.set()
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                    return "kept running"
+                return "ended"
+
+        assert asyncio.run(drive()) == "ended"
+
+
     def test_cancelled_error_is_not_swallowed_by_except_exception(self):
         """CancelledError raised inside the transport call must re-raise
         so the reconnect loop terminates cleanly on cancel — not stay wedged."""
